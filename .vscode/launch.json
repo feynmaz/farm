@@ -10,8 +10,6 @@
             "request": "launch",
             "mode": "exec",
             "program": "${workspaceFolder}/farm-debug",
-            "console": "integratedTerminal",
-            "preLaunchTask": "build-debug-binary"
         }
     ]
 }
