@@ -1,0 +1,89 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/pprof"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/feynmaz/farm/internal/config"
+	"github.com/feynmaz/farm/internal/logger"
+	"github.com/feynmaz/farm/internal/server/middleware"
+)
+
+type Server struct {
+	cfg    *config.Config
+	logger *logger.Logger
+	srv    *http.Server
+}
+
+func New(cfg *config.Config, logger *logger.Logger) *Server {
+	return &Server{
+		cfg:    cfg,
+		logger: logger,
+	}
+}
+
+func (s *Server) Run(ctx context.Context) error {
+	s.srv = &http.Server{
+		Addr:         fmt.Sprintf(":%v", s.cfg.Server.Port),
+		BaseContext:  func(_ net.Listener) context.Context { return ctx },
+		Handler:      s.getRouter(),
+		ReadTimeout:  s.cfg.Server.ReadTimeout,
+		WriteTimeout: s.cfg.Server.WriteTimeout,
+	}
+
+	errChan := make(chan error, 1)
+	go func() {
+		s.logger.Info().Msgf("server started on port %d", s.cfg.Server.Port)
+		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errChan <- err
+		}
+	}()
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-ctx.Done():
+		// We need a separate context for shutdown because ctx is already canceled
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.App.ShutdownTimeout)
+		defer cancel()
+		return s.Shutdown(shutdownCtx)
+	}
+}
+
+func (s *Server) getRouter() *chi.Mux {
+	router := chi.NewMux()
+
+	// Middleware
+	router.Use(middleware.RequestIDMiddleware)
+	router.Use(middleware.NewMonitoringMiddleware(s.cfg.App.Version, s.logger))
+
+	// Profiler
+	router.HandleFunc("/debug/pprof/", pprof.Index)
+	router.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	router.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	router.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	router.Handle("/debug/pprof/goroutine", pprof.Handler("goroutine"))
+	router.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+	router.Handle("/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
+	router.Handle("/debug/pprof/block", pprof.Handler("block"))
+
+	// Metrics
+	router.Handle("/metrics", promhttp.Handler())
+
+	return router
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.logger.Info().Msg("graceful server shutdown")
+	err := s.srv.Shutdown(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to shutdown http server: %w", err)
+	}
+	return nil
+}
