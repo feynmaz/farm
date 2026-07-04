@@ -9,7 +9,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	httpSwagger "github.com/swaggo/http-swagger/v2"
 
 	"github.com/feynmaz/farm/internal/config"
 	"github.com/feynmaz/farm/internal/logger"
@@ -20,14 +19,12 @@ type Server struct {
 	cfg    *config.Config
 	logger *logger.Logger
 	srv    *http.Server
-	v1     http.Handler
 }
 
-func New(cfg *config.Config, logger *logger.Logger, v1 http.Handler) *Server {
+func New(cfg *config.Config, logger *logger.Logger) *Server {
 	return &Server{
 		cfg:    cfg,
 		logger: logger,
-		v1:     v1,
 	}
 }
 
@@ -63,17 +60,6 @@ func (s *Server) getRouter() *chi.Mux {
 
 	// Metrics
 	router.Handle("/metrics", promhttp.Handler())
-
-	// Swagger
-	router.Get("/swagger/*", httpSwagger.Handler(
-		httpSwagger.URL("/swagger/doc.json"),
-	))
-	router.Get("/swagger/doc.json", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, s.cfg.OpenapiPath)
-	})
-
-	// API
-	router.Mount("/api/v1", s.v1)
 
 	return router
 }
