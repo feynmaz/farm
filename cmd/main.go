@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/feynmaz/farm/internal/config"
-	"github.com/rs/zerolog/log"
+	"github.com/feynmaz/farm/internal/logger"
+	"github.com/feynmaz/farm/internal/server"
 )
 
 // Tag is git tag set from Dockerfile
@@ -16,23 +22,50 @@ var Tag string
 var Commit string
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	version := getVersion()
 
 	cfg, err := config.GetDefault()
 	if err != nil {
-		panic(fmt.Errorf("failed to get config: %w", err))
+		return fmt.Errorf("failed to get config: %w", err)
 	}
 	cfg.App.Version = version
 	cfgContent, _ := json.Marshal(cfg)
 
-	log.Debug().RawJSON("config", cfgContent).Send()
+	l, err := logger.New(cfg.App.Name, cfg.App.Env, cfg.Log.Level)
+	if err != nil {
+		return fmt.Errorf("failed to create logger: %w", err)
+	}
 
-	_, initCancel := context.WithTimeout(context.Background(), cfg.App.InitTimeout)
-	defer initCancel()
+	l.Debug().RawJSON("config", cfgContent).Send()
 
-	// setup server
+	srv := server.New(cfg, l)
 
-	// setup server end
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	g, ctx := errgroup.WithContext(signalCtx)
+
+	g.Go(func() error {
+		if err := srv.Run(ctx); err != nil {
+			return fmt.Errorf("server error: %w", err)
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		l.Error().Err(err).Msg("application error")
+		return err
+	}
+
+	l.Info().Msg("server stopped")
+	return nil
 }
 
 func getVersion() string {

@@ -37,8 +37,23 @@ func (s *Server) Run(ctx context.Context) error {
 		WriteTimeout: s.cfg.Server.WriteTimeout,
 	}
 
-	s.logger.Info().Msgf("server started on port %d", s.cfg.Server.Port)
-	return s.srv.ListenAndServe()
+	errChan := make(chan error, 1)
+	go func() {
+		s.logger.Info().Msgf("server started on port %d", s.cfg.Server.Port)
+		if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errChan <- err
+		}
+	}()
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-ctx.Done():
+		// We need a separate context for shutdown because ctx is already canceled
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.App.ShutdownTimeout)
+		defer cancel()
+		return s.Shutdown(shutdownCtx)
+	}
 }
 
 func (s *Server) getRouter() *chi.Mux {
